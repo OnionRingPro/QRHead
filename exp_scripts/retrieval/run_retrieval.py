@@ -1,9 +1,17 @@
 import argparse
 import json
+import os
 from tqdm import tqdm
 import time
 import numpy as np
 from qrretriever.attn_retriever import FullHeadRetriever, QRRetriever
+
+
+def save_checkpoint(output_file, results):
+    tmp_path = output_file + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(results, f, indent=4)
+    os.replace(tmp_path, output_file)
 
 
 def main():
@@ -50,7 +58,16 @@ def main():
     results = {}
     latency_list = []
 
+    # Resume from a previous (possibly OOM-killed) run, if a partial output exists.
+    if os.path.exists(args.output_file):
+        with open(args.output_file, "r") as f:
+            results = json.load(f)
+        print(f"Resuming from checkpoint: {len(results)} items already done.", flush=True)
+
     for i, data in enumerate(tqdm(data_instances)):
+
+        if str(data['idx']) in results:
+            continue
 
         query = data["question"]
         docs = data["paragraphs"]
@@ -80,9 +97,7 @@ def main():
         latency_list.append((end_time - start_time) * 1000)  # Convert to milliseconds
 
         results[data['idx']] = retrieval_scores
-
-    with open(args.output_file, "w") as f:
-        json.dump(results, f, indent=4)
+        save_checkpoint(args.output_file, results)
 
     print(f"Average Latency: {np.mean(latency_list)} ms", flush=True)
 
