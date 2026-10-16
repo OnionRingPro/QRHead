@@ -4,7 +4,7 @@ import os
 from tqdm import tqdm
 import time
 import numpy as np
-from qrretriever.attn_retriever import FullHeadRetriever, QRRetriever
+from qrretriever.attn_retriever import FullHeadRetriever, QRRetriever, CoTQRRetriever
 
 
 def save_checkpoint(output_file, results):
@@ -23,7 +23,8 @@ def main():
     parser.add_argument("--data_type", type=str, choices=["beir", "lme", "clipper"], required=True, help="Type of data.")
     parser.add_argument("--truncate_by_space", type=int, default=0, help="Truncate paragraphs by number of words. Default is 0 (no truncation).")
 
-    parser.add_argument("--retriever_type", type=str, choices=["full_head", "qr_head"], default="full_head", help="Type of retriever to use. Default is 'full_head'.")
+    parser.add_argument("--retriever_type", type=str, choices=["full_head", "qr_head", "cot_qr_head"], default="full_head", help="Type of retriever to use. Default is 'full_head'.")
+    parser.add_argument("--max_instances", type=int, default=0, help="Only run the first N data instances (for smoke tests). Default is 0 (all).")
 
     parser.add_argument("--config_or_config_path", type=str, default=None, help="Path to the configuration file or a configuration string. If not provided, defaults will be used.")
     parser.add_argument("--model_name_or_path", type=str, default=None, help="Path to the model directory or model name.")
@@ -37,6 +38,11 @@ def main():
         )
     elif args.retriever_type == "qr_head":
         retriever = QRRetriever(
+            config_or_config_path=args.config_or_config_path,
+            model_name_or_path=args.model_name_or_path,
+        )
+    elif args.retriever_type == "cot_qr_head":
+        retriever = CoTQRRetriever(
             config_or_config_path=args.config_or_config_path,
             model_name_or_path=args.model_name_or_path,
         )
@@ -55,7 +61,12 @@ def main():
             indices = np.random.choice(len(data_instances), 512, replace=False)
             data_instances = [data_instances[i] for i in indices]
 
+    if args.max_instances > 0:
+        data_instances = data_instances[:args.max_instances]
+
     results = {}
+    cots = {} # idx -> {"text": str, "ids": List[int]}, only for cot_qr_head
+    cot_file = os.path.splitext(args.output_file)[0] + "_cot.json"
     latency_list = []
 
     # Resume from a previous (possibly OOM-killed) run, if a partial output exists.
@@ -63,6 +74,9 @@ def main():
         with open(args.output_file, "r") as f:
             results = json.load(f)
         print(f"Resuming from checkpoint: {len(results)} items already done.", flush=True)
+    if args.retriever_type == "cot_qr_head" and os.path.exists(cot_file):
+        with open(cot_file, "r") as f:
+            cots = json.load(f)
 
     for i, data in enumerate(tqdm(data_instances)):
 
@@ -91,11 +105,19 @@ def main():
             docs = docs[::-1]
 
         start_time = time.time()
-        retrieval_scores = retriever.score_docs(query, docs) # doc_id -> score
+        if args.retriever_type == "cot_qr_head":
+            retrieval_scores, cot_ids = retriever.score_docs(query, docs, return_cot=True) # doc_id -> score
+            cots[data['idx']] = {"text": retriever.tokenizer.decode(cot_ids), "ids": cot_ids}
+            print(f"Query {i} CoT ({len(cot_ids)} tokens): {cots[data['idx']]['text']}", flush=True)
+        else:
+            retrieval_scores = retriever.score_docs(query, docs) # doc_id -> score
         end_time = time.time()
         print(f"Query {i} processed in {(end_time - start_time) * 1000} ms", flush=True)
         latency_list.append((end_time - start_time) * 1000)  # Convert to milliseconds
 
+        # save the CoT first: results is what resuming keys on
+        if cots:
+            save_checkpoint(cot_file, cots)
         results[data['idx']] = retrieval_scores
         save_checkpoint(args.output_file, results)
 
