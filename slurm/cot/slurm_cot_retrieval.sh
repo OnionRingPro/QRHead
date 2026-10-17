@@ -12,9 +12,9 @@
 #SBATCH --mail-user=chenqi3@ualberta.ca
 
 # Smoke test (first 2 queries, separate output dir):
-#   sbatch --time=01:00:00 --export=ALL,MAX_INSTANCES=2,OUT_DIR=./output/lme_cot_smoke slurm_cot_retrieval.sh
+#   sbatch --time=01:00:00 --export=ALL,MAX_INSTANCES=2,OUT_DIR=./output/lme_cot_smoke slurm/cot/slurm_cot_retrieval.sh
 # Full run (resumes from the existing output file if the job gets cut off):
-#   sbatch slurm_cot_retrieval.sh
+#   sbatch slurm/cot/slurm_cot_retrieval.sh
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 

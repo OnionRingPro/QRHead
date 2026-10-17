@@ -25,6 +25,9 @@ def main():
 
     parser.add_argument("--retriever_type", type=str, choices=["full_head", "qr_head", "cot_qr_head"], default="full_head", help="Type of retriever to use. Default is 'full_head'.")
     parser.add_argument("--max_instances", type=int, default=0, help="Only run the first N data instances (for smoke tests). Default is 0 (all).")
+    parser.add_argument("--subsample", type=int, default=0, help="Randomly sample N data instances with a fixed seed (for quick comparisons). Default is 0 (all).")
+    parser.add_argument("--cot_instruction", type=str, default=None, help="Instruction placed before the query for cot_qr_head. Defaults to CoTQRRetriever's default.")
+    parser.add_argument("--max_new_tokens", type=int, default=None, help="Max CoT length for cot_qr_head; 0 scores with the question only (no-CoT control). Defaults to CoTQRRetriever's default.")
 
     parser.add_argument("--config_or_config_path", type=str, default=None, help="Path to the configuration file or a configuration string. If not provided, defaults will be used.")
     parser.add_argument("--model_name_or_path", type=str, default=None, help="Path to the model directory or model name.")
@@ -42,10 +45,13 @@ def main():
             model_name_or_path=args.model_name_or_path,
         )
     elif args.retriever_type == "cot_qr_head":
+        cot_kwargs = {k: v for k, v in [("cot_instruction", args.cot_instruction), ("max_new_tokens", args.max_new_tokens)] if v is not None}
         retriever = CoTQRRetriever(
             config_or_config_path=args.config_or_config_path,
             model_name_or_path=args.model_name_or_path,
+            **cot_kwargs,
         )
+        print(f"CoT instruction: {retriever.cot_instruction}", flush=True)
 
     # read input file
     print(f"Reading input file: {args.input_file}", flush=True)
@@ -60,6 +66,12 @@ def main():
             np.random.seed(42)
             indices = np.random.choice(len(data_instances), 512, replace=False)
             data_instances = [data_instances[i] for i in indices]
+
+    # LME is sorted by question type, so use --subsample rather than --max_instances for representative subsets
+    if args.subsample > 0 and len(data_instances) > args.subsample:
+        np.random.seed(42)
+        indices = np.random.choice(len(data_instances), args.subsample, replace=False)
+        data_instances = [data_instances[i] for i in indices]
 
     if args.max_instances > 0:
         data_instances = data_instances[:args.max_instances]

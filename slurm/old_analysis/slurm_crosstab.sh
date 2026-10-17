@@ -12,7 +12,7 @@ source ~/projects/aip-xiye17/chenqi3/QRHead/.venv/bin/activate
 
 DATA=~/scratch/qrhead_data/data
 
-python exp_scripts/retrieval/crosstab_multisession.py \
+python exp_scripts/old_analysis/crosstab_multisession.py \
     --retrieval_result_file "./output/lme_topk_5/lme_retrieval.json" \
     --data_file "$DATA/longmemeval_data/other_s.json" \
     --reference_file "$DATA/longmemeval_data/other_s_original.json" \

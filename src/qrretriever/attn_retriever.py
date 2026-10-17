@@ -526,7 +526,7 @@ class CoTQRRetriever(QRRetriever):
         model_base_class: Optional[str] = None,
         attn_head_set: Optional[str] = None,
         device: Optional[str] = None,
-        cot_instruction: str = 'Answer the following query step by step: first extract all the relevant information from the paragraphs above, and then reason over the information to get the answer. f no relevant information is found, just say so briefly.',
+        cot_instruction: str = 'Think step by step about the following query using the paragraphs above, then answer it. If no relevant information is found, just say so briefly.',
         max_new_tokens: int = 512,
         query_chunk_size: int = 64,
     ):
@@ -578,10 +578,9 @@ class CoTQRRetriever(QRRetriever):
         with torch.no_grad():
             self.llm(input_ids=torch.tensor([prefix_ids], device=self.device), use_cache=True, past_key_values=kv_cache, compute_logits=False)
 
+        # with max_new_tokens=0 the CoT is empty and the query is just the question (no-CoT control)
         if cot_ids is None:
             cot_ids = self.generate_cot(kv_cache, prefix_len, tail_ids)
-        if len(cot_ids) == 0:
-            raise ValueError("Empty CoT, nothing to use as the query.")
 
         # score with question + CoT as the query: from the question's first token to the last CoT token
         # (span is relative to the tail start, inclusive; it also covers the assistant header in between)

@@ -1,0 +1,7 @@
+Comparing 5 runs on the 50 queries they all cover, k=5
+run             Recall   R-any   R-all    win/tie/loss vs qr  avg CoT tok
+qr              0.8600  0.9400  0.7600                0/50/0            -
+current         0.8207  0.9000  0.7400                4/42/4          105
+A_con           0.7957  0.9200  0.6800                3/40/7          213
+B_quote         0.7523  0.8800  0.6400                2/39/9           98
+C_con_escape    0.7957  0.9200  0.6800                3/40/7          134

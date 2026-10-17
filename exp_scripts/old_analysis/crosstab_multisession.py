@@ -110,6 +110,11 @@ def main():
     print(f"Net samples flipped wrong->correct by oracle: {net_gain} "
           f"(of which {len(buckets['incomplete_evidence__fixed_by_oracle'])} were specifically missing-evidence cases)")
 
+    print()
+    print("=== idx lists per bucket (for manual inspection) ===")
+    for b, qids in buckets.items():
+        print(f"{b} ({len(qids)}): {qids}")
+
 
 if __name__ == "__main__":
     main()
