@@ -1,0 +1,3 @@
+attn_head_set: "21-31,21-11,21-18,22-4,20-14,21-10,20-15,23-30,24-13,20-16,20-17,24-5,24-29,21-8,21-17,20-30"
+model_base_class: "Qwen3-4B-Thinking-2507"
+model_name_or_path: "Qwen/Qwen3-4B-Thinking-2507"
