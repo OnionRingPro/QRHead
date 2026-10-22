@@ -20,7 +20,7 @@ def main():
     parser.add_argument("--input_file", type=str, required=True, help="Path to the input JSON file.")
     parser.add_argument("--output_file", type=str, required=True, help="Path to the output JSON file.")
 
-    parser.add_argument("--data_type", type=str, choices=["beir", "lme", "clipper"], required=True, help="Type of data.")
+    parser.add_argument("--data_type", type=str, choices=["beir", "lme", "clipper", "oolong"], required=True, help="Type of data. Only beir changes behaviour (subsampling, doc order).")
     parser.add_argument("--truncate_by_space", type=int, default=0, help="Truncate paragraphs by number of words. Default is 0 (no truncation).")
 
     parser.add_argument("--retriever_type", type=str, choices=["full_head", "qr_head", "cot_qr_head"], default="full_head", help="Type of retriever to use. Default is 'full_head'.")

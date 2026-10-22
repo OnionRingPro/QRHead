@@ -22,6 +22,10 @@ COLUMNS = ["id", "context_len", "dataset", "context_window_id", "context_window_
 LINE_RE = re.compile(r"^Date: (?P<date>[A-Z][a-z]{2} \d{2}, \d{4}) \|\| User: (?P<user>\d+) \|\| Instance: ")
 DATE_FMT = "%b %d, %Y"
 
+# subset filters: the question's first sentence, "For the following question, only consider the subset of instances that ..."
+USER_FILTER_RE = re.compile(r"associated with user IDs ([^.]+)\.")
+MONTH_FILTER_RE = re.compile(r"occur in ([A-Z][a-z]+) of any year\.")
+RANGE_FILTER_RE = re.compile(r"occur between ([A-Z][a-z]{2} \d{2}, \d{4}) and ([A-Z][a-z]{2} \d{2}, \d{4}), inclusive\.")
 
 def split_context_lines(text: str) -> List[str]:
     """Keep only the data lines, dropping the instruction preamble and the 'Recall:' postamble."""
@@ -42,7 +46,7 @@ def parse_line(unlabeled: str, labeled: str) -> Dict:
 
 
 def parse_subset_filter(question: str) -> Optional[Tuple[str, Callable[[Dict], bool]]]:
-    """Map a subset question to (filter_type, predicate over a parsed line).
+    """Map a subset question to (filter_type, predicate over a parsed line) that picks its gold lines.
 
     The question opens with one of three templates:
         "...instances that are associated with user IDs 36861."
@@ -50,20 +54,31 @@ def parse_subset_filter(question: str) -> Optional[Tuple[str, Callable[[Dict], b
         "...instances that occur between Aug 15, 2022 and Mar 26, 2024, inclusive."
     filter_type is one of "user", "month", "date_range". Return None if no template matches.
     """
-    # TODO(human)
-    raise NotImplementedError
+    m = USER_FILTER_RE.search(question)
+    if m:
+        users = set(re.findall(r"\d+", m.group(1))) # "user IDs" is plural, so allow a list
+        return "user", lambda line: line["user"] in users
+
+    m = MONTH_FILTER_RE.search(question)
+    if m:
+        month = datetime.strptime(m.group(1), "%B").month # "August" -> 8, any year
+        return "month", lambda line: line["date"].month == month
+
+    m = RANGE_FILTER_RE.search(question)
+    if m:
+        start, end = (datetime.strptime(d, DATE_FMT) for d in m.groups())
+        return "date_range", lambda line: start <= line["date"] <= end
+
+    return None
 
 
-def convert_row(row: Dict) -> Optional[Dict]:
+def convert_row(row: Dict, filter_type: str, keep: Callable[[Dict], bool]) -> Dict:
     unlabeled = split_context_lines(row["context_window_text"])
     labeled = split_context_lines(row["context_window_text_with_labels"])
     assert len(unlabeled) == len(labeled), f"row {row['id']}: {len(unlabeled)} vs {len(labeled)} lines"
+    # every instance carries exactly one label, so this catches instances that span several lines
+    assert row["context_window_text_with_labels"].count(" || Label: ") == len(labeled), f"row {row['id']}: multi-line instances"
     lines = [parse_line(u, l) for u, l in zip(unlabeled, labeled)]
-
-    parsed = parse_subset_filter(row["question"])
-    if parsed is None:
-        return None
-    filter_type, keep = parsed
 
     qid = str(row["id"])
     paragraphs = [{"idx": f"{qid}__{i}", "paragraph_text": line["text"]} for i, line in enumerate(lines)]
@@ -93,7 +108,7 @@ def main():
     parser.add_argument("--raw_dir", type=str, required=True, help="Directory with the downloaded oolong-synth data/*.parquet files.")
     parser.add_argument("--output_file", type=str, required=True, help="Path to the output JSON file.")
     parser.add_argument("--split", type=str, choices=["validation", "test"], default="validation")
-    parser.add_argument("--max_context_len", type=int, default=65536, help="Drop context windows longer than this (Llama-3.1 caps at 128K, and the '[i] ' doc markers add overhead).")
+    parser.add_argument("--max_context_len", type=int, default=131072, help="Drop context windows whose context_len bucket is above this. Measured on validation, the QRHead prompt is 0.55-0.92x context_len Llama-3.1 tokens (~121K for the 131072 bucket), so 131072 is the largest bucket that fits Llama-3.1's 128K window.")
     args = parser.parse_args()
 
     files = sorted(glob.glob(os.path.join(args.raw_dir, f"{args.split}-*.parquet")))
@@ -107,16 +122,18 @@ def main():
             for row in batch.to_pylist():
                 stats["rows"] += 1
                 if str(row["input_subset"]) != "True":
-                    stats["not_subset"] += 1
+                    stats["not_subset"] += 1 # whole-context question, no gold subset
                     continue
                 if row["context_len"] > args.max_context_len:
                     stats["too_long"] += 1
                     continue
-                instance = convert_row(row)
-                if instance is None:
+                parsed = parse_subset_filter(row["question"])
+                if parsed is None:
+                    # a subset question always has a filter, so this is a template we don't know yet
                     stats["unparsed"] += 1
                     print(f"Unparsed filter in row {row['id']}: {row['question'][:200]}", flush=True)
                     continue
+                instance = convert_row(row, *parsed)
                 if instance["num_gold_docs"] == 0:
                     stats["empty_gold"] += 1
                     continue
