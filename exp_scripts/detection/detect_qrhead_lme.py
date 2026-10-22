@@ -62,7 +62,6 @@ def get_doc_scores_per_head(full_head_retriever, data_instances, truncate_by_spa
     return doc_scores_per_head
 
 
-
 def score_heads(doc_scores_per_head, data_instances):
     """
     doc_scores_per_head: a dict of dicts, outer dict key is question idx, inner dict key is doc idx, value is a (n_layers, n_heads) tensor

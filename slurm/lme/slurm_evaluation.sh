@@ -48,7 +48,7 @@ done
 python exp_scripts/generation/eval_generation_lme.py \
     --base_url "http://localhost:$PORT/v1" \
     --metric_model "$MODEL_PATH" \
-    --generation_result_file "$OUT/lme_generation.json" \
+    --generation_result_file "$OUT/lme_generation_oracle.json" \
     --reference_file "$DATA/longmemeval_data/other_s_original.json"
 EVAL_EXIT_CODE=$?
 

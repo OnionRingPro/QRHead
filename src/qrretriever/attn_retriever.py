@@ -205,10 +205,7 @@ class AttnBasedRetriever:
         per_token_scores, kv_cache = self.score_per_token_attention_to_query(prompt, query_span, None, 0)
 
         # use kv_cache from first query to speed up forward() for the calibration query.
-        for i in range(len(kv_cache.key_cache)):
-            kv_cache.key_cache[i] = kv_cache.key_cache[i][:,:,:query_span[0],:]
-            kv_cache.value_cache[i] = kv_cache.value_cache[i][:,:,:query_span[0],:]
-        kv_cache._seen_tokens = query_span[0]
+        self._crop_cache(kv_cache, query_span[0])
         start_idx = query_span[0]
 
         null_per_token_scores, _ = self.score_per_token_attention_to_query(null_prompt, null_query_span, kv_cache, start_idx)
@@ -216,6 +213,17 @@ class AttnBasedRetriever:
         min_length = min(per_token_scores.shape[-1], null_per_token_scores.shape[-1])
         per_token_scores_CAL = per_token_scores[:,:,:min_length] - null_per_token_scores[:,:,:min_length]
 
+        return self._aggregate_doc_scores(per_token_scores_CAL, doc_spans, docs)
+
+    def _crop_cache(self, kv_cache, length: int):
+        """Drop everything after the first `length` tokens so the cache can be extended with a new tail."""
+        for i in range(len(kv_cache.key_cache)):
+            kv_cache.key_cache[i] = kv_cache.key_cache[i][:,:,:length,:]
+            kv_cache.value_cache[i] = kv_cache.value_cache[i][:,:,:length,:]
+        kv_cache._seen_tokens = length
+
+    def _aggregate_doc_scores(self, per_token_scores_CAL: torch.Tensor, doc_spans: List[Tuple[int, int]], docs: List[Dict]) -> Dict[str, float]:
+        """per_token_scores_CAL: (num_layers, num_heads, num_tokens). Returns doc_id -> score."""
         # Steps:
         # 1. select heads if head_set is not full
         # 2. aggregate scores across heads
@@ -280,10 +288,7 @@ class AttnBasedRetriever:
         per_token_scores, kv_cache = self.score_per_token_attention_to_query(prompt, query_span, None, 0)
 
         # use kv_cache from first query to speed up forward() for the calibration query.
-        for i in range(len(kv_cache.key_cache)):
-            kv_cache.key_cache[i] = kv_cache.key_cache[i][:,:,:query_span[0],:]
-            kv_cache.value_cache[i] = kv_cache.value_cache[i][:,:,:query_span[0],:]
-        kv_cache._seen_tokens = query_span[0]
+        self._crop_cache(kv_cache, query_span[0])
         start_idx = query_span[0]
 
         null_per_token_scores, _ = self.score_per_token_attention_to_query(null_prompt, null_query_span, kv_cache, start_idx)
@@ -502,3 +507,178 @@ class QRRetriever(AttnBasedRetriever):
             else:
                 raise ValueError("model_name_or_path or model_base_class is required to use default config")
         return config
+
+
+class CoTQRRetriever(QRRetriever):
+    """
+    QRRetriever that uses a model-generated chain of thought (CoT) as the query.
+
+    The docs prefix is prefilled once; every later step crops the KV cache back to it and forwards a new tail:
+        prefix = [BOS, retrieval instruction, doc1..docN]          (identical to QRRetriever)
+        tail   = [CoT instruction, Query: q, assistant header]
+        1) generate:  prefix | tail          -> greedy-decode the CoT
+        2) score:     prefix | tail + CoT    with the question + CoT tokens as the query
+        3) calibrate: prefix | null tail     (+ another query's CoT as a permutation null if null_cot)
+    """
+    def __init__(self,
+        config_or_config_path: Optional[Union[Dict, str]] = None,
+        model_name_or_path: Optional[str] = None,
+        model_base_class: Optional[str] = None,
+        attn_head_set: Optional[str] = None,
+        device: Optional[str] = None,
+        cot_instruction: str = 'Think step by step about the following query using the paragraphs above, then answer it. If no relevant information is found, just say so briefly.',
+        max_new_tokens: int = 512,
+        query_chunk_size: int = 64,
+        q_weight: Optional[float] = None,
+        null_cot: bool = False,
+    ):
+        super().__init__(config_or_config_path, model_name_or_path, model_base_class, attn_head_set, device)
+        self.cot_instruction = cot_instruction
+        self.max_new_tokens = max_new_tokens
+        self.query_chunk_size = query_chunk_size
+        self.q_weight = q_weight  # share of the question tokens in the query mean; None = plain mean over question + CoT
+        self.null_cot = null_cot  # calibrate the CoT part against another query's CoT (passed to score_docs) instead of the null query alone
+        # what the chat template puts after the assistant header; get_prompt() leaves it out
+        self.generation_prefix = '\n' if 'qwen' in self.model_base_class.lower() else '\n\n'
+
+    def _build_tail(self, instruction: str, query: str) -> Tuple[str, List[int]]:
+        """Text and token ids of the part after the docs prefix. Needs the template attributes set by get_prompt()."""
+        tail_text = instruction + self.prompt_separator + 'Query:' + f' {query}' + self.prompt_suffix + self.generation_prefix
+        return tail_text, self.tokenizer(tail_text, add_special_tokens=False).input_ids
+
+    def _query_start(self, instruction: str, tail_ids: List[int]) -> int:
+        """Position (relative to the tail start) of the query's first token in a tail built by _build_tail()."""
+        head_ids = self.tokenizer(instruction + self.prompt_separator + 'Query:', add_special_tokens=False).input_ids
+        assert tail_ids[:len(head_ids)] == head_ids, "Tokenization differs at the 'Query:' boundary."
+        return len(head_ids)
+
+    def compose_cot_prompt(self, query: str, docs: List[Dict]) -> Tuple:
+        """
+        Keep QRRetriever's prompt up to the query (so doc spans and what the QRHeads see over the docs are unchanged)
+        and replace everything after it with the CoT tail.
+        Returns (cot_prompt, prefix_ids, tail_ids, doc_spans). cot_prompt is the plain-text prompt, e.g. for
+        generating the CoT offline with vLLM.
+        """
+        llm_prompt, prompt_ids, query_span, doc_spans = self.compose_scoring_prompt(query, docs)
+        prefix_ids = prompt_ids[:query_span[0]]
+        tail_text, tail_ids = self._build_tail(self.cot_instruction, query)
+
+        cot_prompt = llm_prompt[:llm_prompt.rindex(self.retrieval_instruction_late)] + tail_text
+        # prefix and tail are tokenized separately; that must match tokenizing the whole prompt at once
+        assert self.tokenizer(cot_prompt).input_ids == prefix_ids + tail_ids, "Tokenization differs at the prefix/tail boundary."
+        return cot_prompt, prefix_ids, tail_ids, doc_spans
+
+    def score_docs(self, query: str, docs: List[Dict], cot_ids: Optional[List[int]] = None, return_cot: bool = False, null_cot_ids: Optional[List[int]] = None):
+        """
+        cot_ids: optional pre-generated CoT (e.g. from vLLM on compose_cot_prompt()[0]), tokenized with
+                 add_special_tokens=False and without EOS. Generated greedily here if not given.
+        null_cot_ids: with null_cot, another query's CoT to put after the null query (permutation null).
+        Returns doc_id -> score, or (doc_id -> score, cot_ids) if return_cot.
+        """
+        _, prefix_ids, tail_ids, doc_spans = self.compose_cot_prompt(query, docs)
+        prefix_len = len(prefix_ids)
+
+        # prefill the docs prefix once; no query vectors are needed from it
+        kv_cache = DynamicCacheWithQuery(query_indices=[])
+        with torch.no_grad():
+            self.llm(input_ids=torch.tensor([prefix_ids], device=self.device), use_cache=True, past_key_values=kv_cache, compute_logits=False)
+
+        # with max_new_tokens=0 the CoT is empty and the query is just the question (no-CoT control)
+        if cot_ids is None:
+            cot_ids = self.generate_cot(kv_cache, prefix_len, tail_ids)
+
+        # score with question + CoT as the query: from the question's first token to the last CoT token
+        # (span is relative to the tail start, inclusive; it also covers the assistant header in between)
+        query_span = (self._query_start(self.cot_instruction, tail_ids), len(tail_ids) + len(cot_ids) - 1)
+        per_token_scores = self._score_tail(kv_cache, prefix_len, tail_ids + cot_ids, query_span, n_q=len(tail_ids) - query_span[0])
+
+        # calibrate with a null query under the same CoT instruction (mirrors QRRetriever's null-query calibration);
+        # the null span starts at the null query too, so it covers the same parts of the tail as query_span.
+        # With null_cot the null query is followed by another query's CoT (same length and style, content unrelated
+        # to these docs), so the query's CoT part is calibrated against it: (q - null_q) and (CoT - null_CoT),
+        # weighted by q_weight the same way on both sides.
+        _, null_tail_ids = self._build_tail(self.cot_instruction, self.null_query)
+        # generating the null CoT just gave "There is no query to answer." (~7 tokens), unlike a real CoT
+        # null_cot_ids = self.generate_cot(kv_cache, prefix_len, null_tail_ids) if self.null_cot else []
+        null_cot_ids = null_cot_ids if self.null_cot and null_cot_ids else []
+        null_start = self._query_start(self.cot_instruction, null_tail_ids)
+        null_span = (null_start, len(null_tail_ids) + len(null_cot_ids) - 1)
+        null_per_token_scores = self._score_tail(kv_cache, prefix_len, null_tail_ids + null_cot_ids, null_span, n_q=len(null_tail_ids) - null_start)
+        self.last_null_cot_ids = null_cot_ids
+
+        min_length = min(per_token_scores.shape[-1], null_per_token_scores.shape[-1])
+        per_token_scores_CAL = per_token_scores[:,:,:min_length] - null_per_token_scores[:,:,:min_length]
+
+        results = self._aggregate_doc_scores(per_token_scores_CAL, doc_spans, docs)
+        return (results, cot_ids) if return_cot else results
+
+    def generate_cot(self, kv_cache: DynamicCacheWithQuery, prefix_len: int, tail_ids: List[int]) -> List[int]:
+        """Greedy-decode a CoT on top of the prefilled docs prefix. Returns token ids without EOS."""
+        self._crop_cache(kv_cache, prefix_len)
+        # the model slices query_states[:, :, _query_indices] on every forward; while decoding q_len is 1,
+        # so any real index would be out of range. Cache no query vectors during generation.
+        kv_cache._query_indices = []
+        kv_cache.query_cache = []
+
+        eos = self.llm.generation_config.eos_token_id
+        eos_ids = set(eos if isinstance(eos, list) else [eos]) | {self.tokenizer.eos_token_id}
+
+        cot_ids = []
+        input_ids = torch.tensor([tail_ids], device=self.device)
+        with torch.no_grad():
+            for _ in range(self.max_new_tokens):
+                logits = self.llm(input_ids=input_ids, use_cache=True, past_key_values=kv_cache).logits
+                next_id = logits[0, -1].argmax().item()
+                if next_id in eos_ids:
+                    break
+                cot_ids.append(next_id)
+                input_ids = torch.tensor([[next_id]], device=self.device)
+        return cot_ids
+
+    def _score_tail(self, kv_cache: DynamicCacheWithQuery, prefix_len: int, tail_ids: List[int], query_span: Tuple[int, int], n_q: Optional[int] = None) -> torch.Tensor:
+        """
+        Crop the cache back to the docs prefix, forward tail_ids on top of it, and return the mean attention from
+        tail_ids[query_span[0] : query_span[1]+1] (relative to the tail start, inclusive) to every token,
+        shape (num_layers, num_heads, prefix_len + len(tail_ids)).
+        """
+        self._crop_cache(kv_cache, prefix_len)
+        kv_cache.query_cache = []
+        kv_cache._query_indices = list(range(query_span[0], query_span[1] + 1))
+        with torch.no_grad():
+            self.llm(input_ids=torch.tensor([tail_ids], device=self.device), use_cache=True, past_key_values=kv_cache, compute_logits=False)
+        return self._attn_scores_from_cache(kv_cache, prefix_len + query_span[0], n_q)
+
+    def _attn_scores_from_cache(self, kv_cache: DynamicCacheWithQuery, query_start: int, n_q: Optional[int] = None) -> torch.Tensor:
+        """
+        Same as the loop in score_per_token_attention_to_query, except that it
+          - only computes the layers the head set uses (other layers stay zero),
+          - processes the query tokens in chunks: a CoT is ~10x longer than the original query span, and
+            _get_attn_weights materializes (num_heads, q_len, kv_len) plus a causal mask of the same size.
+        Each chunk only sees keys up to its own last token, so the bottom-right causal mask in _get_attn_weights
+        stays correct even when the query tokens are not at the end of the sequence.
+        query_start: absolute position of the first cached query token.
+        """
+        num_layers = self.llm.config.num_hidden_layers
+        num_heads = self.llm.config.num_attention_heads
+        kv_len = kv_cache.key_cache[0].shape[-2]
+        q_len = kv_cache.query_cache[0].shape[-2]
+
+        if self.attn_head_set == SPEC_HEAD_SET.FULL_SET:
+            layers = range(num_layers)
+        else:
+            layers = sorted({int(h.split('-')[0]) for h in self.attn_head_set.split(',')})
+
+        # weight of each query token: plain mean, or q_weight split over the first n_q tokens (question) and 1-q_weight over the rest (CoT)
+        tok_w = torch.full((q_len,), 1 / q_len)
+        if self.q_weight is not None and n_q is not None and n_q < q_len:
+            tok_w[:n_q] = self.q_weight / n_q
+            tok_w[n_q:] = (1 - self.q_weight) / (q_len - n_q)
+
+        scores = torch.zeros(num_layers, num_heads, kv_len, dtype=torch.float32, device=self.device)
+        for i in layers:
+            for c0 in range(0, q_len, self.query_chunk_size):
+                c1 = min(c0 + self.query_chunk_size, q_len)
+                end = query_start + c1  # keys visible to the last query token of this chunk
+                attn_weights = self._get_attn_weights(kv_cache.key_cache[i][:, :, :end, :], kv_cache.query_cache[i][:, :, c0:c1, :])
+                scores[i, :, :end] += (attn_weights[0].float() * tok_w[c0:c1, None].to(attn_weights.device)).sum(1).to(self.device)
+        return scores
