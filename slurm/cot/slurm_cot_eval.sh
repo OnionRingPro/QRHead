@@ -14,11 +14,26 @@ source ~/projects/aip-xiye17/chenqi3/QRHead/.venv/bin/activate
 
 DATA=~/scratch/qrhead_data/data
 
-python exp_scripts/retrieval/eval_retrieval.py \
-    --retrieval_result_file ./output/lme_cot/lme_cot_retrieval.json \
-    --data_file "$DATA/longmemeval_data/other_s.json"
+# python exp_scripts/retrieval/eval_retrieval.py \
+#     --retrieval_result_file ./output/lme_cot/lme_cot_retrieval.json \
+#     --data_file "$DATA/longmemeval_data/other_s.json"
+
+# python exp_scripts/retrieval/compare_retrieval.py \
+#     --data_file "$DATA/longmemeval_data/other_s.json" \
+#     --k 5 \
+#     --runs qr=./output/lme_topk_5/lme_retrieval.json cot=./output/lme_cot/lme_cot_retrieval.json
+
+# python exp_scripts/retrieval/compare_retrieval.py \
+#     --data_file "$DATA/longmemeval_data/other_s.json" \
+#     --k 5 \
+#     --runs qr=./output/lme_topk_5/lme_retrieval.json bm25_q=./output/lme_bm25/bm25_q.json bm25_cot=./output/lme_bm25/bm25_cot.json bm25_q+cot=./output/lme_bm25/bm25_q+cot.json cot=./output/lme_cot/lme_cot_retrieval.json
+
 
 python exp_scripts/retrieval/compare_retrieval.py \
     --data_file "$DATA/longmemeval_data/other_s.json" \
     --k 5 \
-    --runs qr=./output/lme_topk_5/lme_retrieval.json cot=./output/lme_cot/lme_cot_retrieval.json
+    --runs qr=./output/lme_topk_5/lme_retrieval.json \
+           cot=./output/lme_cot/lme_cot_retrieval.json \
+           cot_null=./output/lme_cot/lme_cot_null_retrieval.json \
+           qw1.0=./output/lme_cot_qw1.0/lme_cot_retrieval.json \
+           cot_permnull=./output/lme_cot/lme_cot_permnull_retrieval.json

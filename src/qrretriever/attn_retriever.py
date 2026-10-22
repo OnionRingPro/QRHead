@@ -518,7 +518,7 @@ class CoTQRRetriever(QRRetriever):
         tail   = [CoT instruction, Query: q, assistant header]
         1) generate:  prefix | tail          -> greedy-decode the CoT
         2) score:     prefix | tail + CoT    with the question + CoT tokens as the query
-        3) calibrate: prefix | null tail
+        3) calibrate: prefix | null tail     (+ another query's CoT as a permutation null if null_cot)
     """
     def __init__(self,
         config_or_config_path: Optional[Union[Dict, str]] = None,
@@ -529,11 +529,15 @@ class CoTQRRetriever(QRRetriever):
         cot_instruction: str = 'Think step by step about the following query using the paragraphs above, then answer it. If no relevant information is found, just say so briefly.',
         max_new_tokens: int = 512,
         query_chunk_size: int = 64,
+        q_weight: Optional[float] = None,
+        null_cot: bool = False,
     ):
         super().__init__(config_or_config_path, model_name_or_path, model_base_class, attn_head_set, device)
         self.cot_instruction = cot_instruction
         self.max_new_tokens = max_new_tokens
         self.query_chunk_size = query_chunk_size
+        self.q_weight = q_weight  # share of the question tokens in the query mean; None = plain mean over question + CoT
+        self.null_cot = null_cot  # calibrate the CoT part against another query's CoT (passed to score_docs) instead of the null query alone
         # what the chat template puts after the assistant header; get_prompt() leaves it out
         self.generation_prefix = '\n' if 'qwen' in self.model_base_class.lower() else '\n\n'
 
@@ -564,10 +568,11 @@ class CoTQRRetriever(QRRetriever):
         assert self.tokenizer(cot_prompt).input_ids == prefix_ids + tail_ids, "Tokenization differs at the prefix/tail boundary."
         return cot_prompt, prefix_ids, tail_ids, doc_spans
 
-    def score_docs(self, query: str, docs: List[Dict], cot_ids: Optional[List[int]] = None, return_cot: bool = False):
+    def score_docs(self, query: str, docs: List[Dict], cot_ids: Optional[List[int]] = None, return_cot: bool = False, null_cot_ids: Optional[List[int]] = None):
         """
         cot_ids: optional pre-generated CoT (e.g. from vLLM on compose_cot_prompt()[0]), tokenized with
                  add_special_tokens=False and without EOS. Generated greedily here if not given.
+        null_cot_ids: with null_cot, another query's CoT to put after the null query (permutation null).
         Returns doc_id -> score, or (doc_id -> score, cot_ids) if return_cot.
         """
         _, prefix_ids, tail_ids, doc_spans = self.compose_cot_prompt(query, docs)
@@ -585,13 +590,21 @@ class CoTQRRetriever(QRRetriever):
         # score with question + CoT as the query: from the question's first token to the last CoT token
         # (span is relative to the tail start, inclusive; it also covers the assistant header in between)
         query_span = (self._query_start(self.cot_instruction, tail_ids), len(tail_ids) + len(cot_ids) - 1)
-        per_token_scores = self._score_tail(kv_cache, prefix_len, tail_ids + cot_ids, query_span)
+        per_token_scores = self._score_tail(kv_cache, prefix_len, tail_ids + cot_ids, query_span, n_q=len(tail_ids) - query_span[0])
 
         # calibrate with a null query under the same CoT instruction (mirrors QRRetriever's null-query calibration);
-        # the null span starts at the null query too, so it covers the same parts of the tail as query_span
+        # the null span starts at the null query too, so it covers the same parts of the tail as query_span.
+        # With null_cot the null query is followed by another query's CoT (same length and style, content unrelated
+        # to these docs), so the query's CoT part is calibrated against it: (q - null_q) and (CoT - null_CoT),
+        # weighted by q_weight the same way on both sides.
         _, null_tail_ids = self._build_tail(self.cot_instruction, self.null_query)
-        null_span = (self._query_start(self.cot_instruction, null_tail_ids), len(null_tail_ids) - 1)
-        null_per_token_scores = self._score_tail(kv_cache, prefix_len, null_tail_ids, null_span)
+        # generating the null CoT just gave "There is no query to answer." (~7 tokens), unlike a real CoT
+        # null_cot_ids = self.generate_cot(kv_cache, prefix_len, null_tail_ids) if self.null_cot else []
+        null_cot_ids = null_cot_ids if self.null_cot and null_cot_ids else []
+        null_start = self._query_start(self.cot_instruction, null_tail_ids)
+        null_span = (null_start, len(null_tail_ids) + len(null_cot_ids) - 1)
+        null_per_token_scores = self._score_tail(kv_cache, prefix_len, null_tail_ids + null_cot_ids, null_span, n_q=len(null_tail_ids) - null_start)
+        self.last_null_cot_ids = null_cot_ids
 
         min_length = min(per_token_scores.shape[-1], null_per_token_scores.shape[-1])
         per_token_scores_CAL = per_token_scores[:,:,:min_length] - null_per_token_scores[:,:,:min_length]
@@ -622,7 +635,7 @@ class CoTQRRetriever(QRRetriever):
                 input_ids = torch.tensor([[next_id]], device=self.device)
         return cot_ids
 
-    def _score_tail(self, kv_cache: DynamicCacheWithQuery, prefix_len: int, tail_ids: List[int], query_span: Tuple[int, int]) -> torch.Tensor:
+    def _score_tail(self, kv_cache: DynamicCacheWithQuery, prefix_len: int, tail_ids: List[int], query_span: Tuple[int, int], n_q: Optional[int] = None) -> torch.Tensor:
         """
         Crop the cache back to the docs prefix, forward tail_ids on top of it, and return the mean attention from
         tail_ids[query_span[0] : query_span[1]+1] (relative to the tail start, inclusive) to every token,
@@ -633,9 +646,9 @@ class CoTQRRetriever(QRRetriever):
         kv_cache._query_indices = list(range(query_span[0], query_span[1] + 1))
         with torch.no_grad():
             self.llm(input_ids=torch.tensor([tail_ids], device=self.device), use_cache=True, past_key_values=kv_cache, compute_logits=False)
-        return self._attn_scores_from_cache(kv_cache, prefix_len + query_span[0])
+        return self._attn_scores_from_cache(kv_cache, prefix_len + query_span[0], n_q)
 
-    def _attn_scores_from_cache(self, kv_cache: DynamicCacheWithQuery, query_start: int) -> torch.Tensor:
+    def _attn_scores_from_cache(self, kv_cache: DynamicCacheWithQuery, query_start: int, n_q: Optional[int] = None) -> torch.Tensor:
         """
         Same as the loop in score_per_token_attention_to_query, except that it
           - only computes the layers the head set uses (other layers stay zero),
@@ -655,11 +668,17 @@ class CoTQRRetriever(QRRetriever):
         else:
             layers = sorted({int(h.split('-')[0]) for h in self.attn_head_set.split(',')})
 
+        # weight of each query token: plain mean, or q_weight split over the first n_q tokens (question) and 1-q_weight over the rest (CoT)
+        tok_w = torch.full((q_len,), 1 / q_len)
+        if self.q_weight is not None and n_q is not None and n_q < q_len:
+            tok_w[:n_q] = self.q_weight / n_q
+            tok_w[n_q:] = (1 - self.q_weight) / (q_len - n_q)
+
         scores = torch.zeros(num_layers, num_heads, kv_len, dtype=torch.float32, device=self.device)
         for i in layers:
             for c0 in range(0, q_len, self.query_chunk_size):
                 c1 = min(c0 + self.query_chunk_size, q_len)
                 end = query_start + c1  # keys visible to the last query token of this chunk
                 attn_weights = self._get_attn_weights(kv_cache.key_cache[i][:, :, :end, :], kv_cache.query_cache[i][:, :, c0:c1, :])
-                scores[i, :, :end] += attn_weights[0].float().sum(1).to(self.device)  # sum over this chunk's query tokens
-        return scores / q_len  # mean over query tokens
+                scores[i, :, :end] += (attn_weights[0].float() * tok_w[c0:c1, None].to(attn_weights.device)).sum(1).to(self.device)
+        return scores

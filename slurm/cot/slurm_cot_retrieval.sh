@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:l40s:2
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
-#SBATCH --time=16:00:00
+#SBATCH --time=10:00:00
 #SBATCH --chdir=/project/aip-xiye17/chenqi3/QRHead
 #SBATCH --output=./out/%x_%j.out
 #SBATCH --error=./out/%x_%j.err
@@ -25,11 +25,16 @@ OUT_DIR=${OUT_DIR:-./output/lme_cot}
 MAX_INSTANCES=${MAX_INSTANCES:-0}
 mkdir -p "$OUT_DIR"
 
+OUT_FILE="$OUT_DIR/lme_cot_permnull_retrieval.json"
+# EXTRA_ARGS="--q_weight 0.8 --cot_file ./output/lme_cot/lme_cot_retrieval_cot.json"
+EXTRA_ARGS="--subsample 50 --null_cot --cot_file ./output/lme_cot/lme_cot_retrieval_cot.json"
+
 # writes $OUT_DIR/lme_cot_retrieval.json (doc scores) and $OUT_DIR/lme_cot_retrieval_cot.json (CoT text + ids)
 python exp_scripts/retrieval/run_retrieval.py \
     --input_file "$DATA/longmemeval_data/other_s.json" \
-    --output_file "$OUT_DIR/lme_cot_retrieval.json" \
+    --output_file "$OUT_FILE" \
     --data_type lme \
     --retriever_type cot_qr_head \
     --max_instances "$MAX_INSTANCES" \
-    --config_or_config_path src/qrretriever/configs/Llama-3.1-8B-Instruct_qr_head_LME.yaml
+    --config_or_config_path src/qrretriever/configs/Llama-3.1-8B-Instruct_qr_head_LME.yaml \
+    ${EXTRA_ARGS:-}
