@@ -9,6 +9,7 @@ from .config import load_config
 from .custom_cache import DynamicCacheWithQuery
 from .custom_modeling_llama import LlamaForCausalLM, repeat_kv
 from .custom_modeling_qwen2 import Qwen2ForCausalLM
+from .custom_modeling_qwen3 import Qwen3ForCausalLM
 
 PACKAGE_DIR = Path(__file__).parent
 CONFIG_DIR = PACKAGE_DIR / 'configs'
@@ -29,11 +30,16 @@ QWEN_TEMPLATE = dict(
 )
 MODEL_SPECS = {
     # config_name = prefix of the model's default configs, e.g. configs/Llama-3.1-8B-Instruct_full_head.yaml
-    'llama-3.1-8b-instruct': dict(model_class=LlamaForCausalLM, config_name='Llama-3.1-8B-Instruct', **LLAMA_TEMPLATE),
-    'llama-3.1-70b-instruct': dict(model_class=LlamaForCausalLM, config_name='Llama-3.1-70B-Instruct', **LLAMA_TEMPLATE),
-    'llama-3.2-3b-instruct': dict(model_class=LlamaForCausalLM, config_name='Llama-3.2-3B-Instruct', **LLAMA_TEMPLATE),
-    'llama-3.2-1b-instruct': dict(model_class=LlamaForCausalLM, config_name='Llama-3.2-1B-Instruct', **LLAMA_TEMPLATE),
-    'qwen2.5-7b-instruct': dict(model_class=Qwen2ForCausalLM, config_name='Qwen2.5-7B-Instruct', **QWEN_TEMPLATE),
+    'llama-3.1-8b-instruct': dict(model_class=LlamaForCausalLM, config_name='Llama-3.1-8B-Instruct', torch_dtype=torch.float16, **LLAMA_TEMPLATE),
+    'llama-3.1-70b-instruct': dict(model_class=LlamaForCausalLM, config_name='Llama-3.1-70B-Instruct', torch_dtype=torch.float16, **LLAMA_TEMPLATE),
+    'llama-3.2-3b-instruct': dict(model_class=LlamaForCausalLM, config_name='Llama-3.2-3B-Instruct', torch_dtype=torch.float16, **LLAMA_TEMPLATE),
+    'llama-3.2-1b-instruct': dict(model_class=LlamaForCausalLM, config_name='Llama-3.2-1B-Instruct', torch_dtype=torch.float16, **LLAMA_TEMPLATE),
+    'qwen2.5-7b-instruct': dict(model_class=Qwen2ForCausalLM, config_name='Qwen2.5-7B-Instruct', torch_dtype=torch.float16, **QWEN_TEMPLATE),
+    # Qwen3 is trained in bf16; fp16 risks overflowing its activation outliers
+    'qwen3-4b-instruct-2507': dict(model_class=Qwen3ForCausalLM, config_name='Qwen3-4B-Instruct-2507', torch_dtype=torch.bfloat16, **QWEN_TEMPLATE),
+    # the Thinking chat template opens the reply with '<think>\n', so a generated CoT is the model's own reasoning
+    'qwen3-4b-thinking-2507': dict(model_class=Qwen3ForCausalLM, config_name='Qwen3-4B-Thinking-2507', torch_dtype=torch.bfloat16,
+                                   **{**QWEN_TEMPLATE, 'generation_prefix': '\n<think>\n'}),
 }
 
 
@@ -85,12 +91,12 @@ class AttnBasedRetriever:
             setattr(self, k, v)
 
         # init model etc
-        BaseClass = get_model_spec(self.model_base_class)['model_class']
+        spec = get_model_spec(self.model_base_class)
 
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(self.model_name_or_path)
-        self.llm = BaseClass.from_pretrained(
+        self.llm = spec['model_class'].from_pretrained(
             self.model_name_or_path,
-            torch_dtype=torch.float16, 
+            torch_dtype=spec['torch_dtype'],
             attn_implementation="flash_attention_2",
             device_map='auto'
         )
