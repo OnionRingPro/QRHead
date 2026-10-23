@@ -198,3 +198,4 @@ out/
 output/
 slurm_install_vllm.sh
 intermediate_results/
+notes/
