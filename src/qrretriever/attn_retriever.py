@@ -495,8 +495,10 @@ class CoTQRRetriever(QRRetriever):
         prefix = [BOS, retrieval instruction, doc1..docN]          (identical to QRRetriever)
         tail   = [CoT instruction, Query: q, assistant header]
         1) generate:  prefix | tail          -> greedy-decode the CoT
-        2) score:     prefix | tail + CoT    with the question + CoT tokens as the query
+        2) score:     prefix | tail + CoT    with the instruction + question + CoT tokens as the query
         3) calibrate: prefix | null tail     (+ another query's CoT as a permutation null if null_cot)
+    With span_from_instruction=False the query starts at the question instead, as before 2026-10-24; on oolong test64k
+    that cost 7-15 Recall@|gold| points against QRRetriever, whose query span also starts at its instruction.
     """
     def __init__(self,
         config_or_config_path: Optional[Union[Dict, str]] = None,
@@ -509,13 +511,15 @@ class CoTQRRetriever(QRRetriever):
         query_chunk_size: int = 64,
         q_weight: Optional[float] = None,
         null_cot: bool = False,
+        span_from_instruction: bool = True,
     ):
         super().__init__(config_or_config_path, model_name_or_path, model_base_class, attn_head_set, device)
         self.cot_instruction = cot_instruction
         self.max_new_tokens = max_new_tokens
         self.query_chunk_size = query_chunk_size
-        self.q_weight = q_weight  # share of the question tokens in the query mean; None = plain mean over question + CoT
+        self.q_weight = q_weight  # share of the tail tokens before the CoT in the query mean; None = plain mean over tail + CoT
         self.null_cot = null_cot  # calibrate the CoT part against another query's CoT (passed to score_docs) instead of the null query alone
+        self.span_from_instruction = span_from_instruction  # query span starts at the CoT instruction (else at the question)
         self.generation_prefix = get_model_spec(self.model_base_class)['generation_prefix']
 
     def _build_tail(self, instruction: str, query: str) -> Tuple[str, List[int]]:
@@ -528,6 +532,11 @@ class CoTQRRetriever(QRRetriever):
         head_ids = self.tokenizer(instruction + self.prompt_separator + 'Query:', add_special_tokens=False).input_ids
         assert tail_ids[:len(head_ids)] == head_ids, "Tokenization differs at the 'Query:' boundary."
         return len(head_ids)
+
+    def _span_start(self, tail_ids: List[int]) -> int:
+        """Where the scored query span starts in a tail built by _build_tail(): the instruction (0) or the question."""
+        question_start = self._query_start(self.cot_instruction, tail_ids)  # also checks the tokenization boundary
+        return 0 if self.span_from_instruction else question_start
 
     def compose_cot_prompt(self, query: str, docs: List[Dict]) -> Tuple:
         """
@@ -564,13 +573,15 @@ class CoTQRRetriever(QRRetriever):
         if cot_ids is None:
             cot_ids = self.generate_cot(kv_cache, prefix_len, tail_ids)
 
-        # score with question + CoT as the query: from the question's first token to the last CoT token
-        # (span is relative to the tail start, inclusive; it also covers the assistant header in between)
-        query_span = (self._query_start(self.cot_instruction, tail_ids), len(tail_ids) + len(cot_ids) - 1)
+        # score with the tail + CoT as the query: from the instruction's (or the question's) first token to the last CoT
+        # token (span is relative to the tail start, inclusive; it also covers the assistant header in between).
+        # Starting at the instruction matches QRRetriever, whose query span also starts at its instruction.
+        query_span = (self._span_start(tail_ids), len(tail_ids) + len(cot_ids) - 1)
         per_token_scores = self._score_tail(kv_cache, prefix_len, tail_ids + cot_ids, query_span, n_q=len(tail_ids) - query_span[0])
 
         # calibrate with a null query under the same CoT instruction (mirrors QRRetriever's null-query calibration);
-        # the null span starts at the null query too, so it covers the same parts of the tail as query_span.
+        # the null span starts at the same place in the null tail (instruction or null query), so it covers the same
+        # parts of the tail as query_span.
         # With null_cot the null query is followed by another query's CoT (same length and style, content unrelated
         # to these docs), so the query's CoT part is calibrated against it: (q - null_q) and (CoT - null_CoT),
         # weighted by q_weight the same way on both sides.
@@ -578,7 +589,7 @@ class CoTQRRetriever(QRRetriever):
         # generating the null CoT just gave "There is no query to answer." (~7 tokens), unlike a real CoT
         # null_cot_ids = self.generate_cot(kv_cache, prefix_len, null_tail_ids) if self.null_cot else []
         null_cot_ids = null_cot_ids if self.null_cot and null_cot_ids else []
-        null_start = self._query_start(self.cot_instruction, null_tail_ids)
+        null_start = self._span_start(null_tail_ids)
         null_span = (null_start, len(null_tail_ids) + len(null_cot_ids) - 1)
         null_per_token_scores = self._score_tail(kv_cache, prefix_len, null_tail_ids + null_cot_ids, null_span, n_q=len(null_tail_ids) - null_start)
         self.last_null_cot_ids = null_cot_ids

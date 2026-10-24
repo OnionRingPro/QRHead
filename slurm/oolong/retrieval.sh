@@ -13,6 +13,8 @@
 #   SUBSAMPLE, MAX_INSTANCES                    optional, for quick runs
 #   MAX_NEW_TOKENS, Q_WEIGHT, COT_INSTRUCTION, COT_FILE, NULL_COT=1   optional, cot_qr_head only
 #                                               (MAX_NEW_TOKENS=0 is the no-CoT control)
+#   SPAN_FROM_QUESTION=1                        cot_qr_head only: score from the question, not the instruction
+#                                               (the pre-2026-10-24 behaviour, ~7-15 points lower on oolong)
 # Writes $RUN_DIR/retrieval.json (+ retrieval_cot.json for cot_qr_head) and $RUN_DIR/eval.txt
 # (no eval when SUBSAMPLE/MAX_INSTANCES is set).
 
@@ -28,6 +30,7 @@ args=()
 [ -n "${COT_INSTRUCTION:-}" ] && args+=(--cot_instruction "$COT_INSTRUCTION")
 [ -n "${COT_FILE:-}" ] && args+=(--cot_file "$COT_FILE")
 [ "${NULL_COT:-0}" = 1 ] && args+=(--null_cot)
+[ "${SPAN_FROM_QUESTION:-0}" = 1 ] && args+=(--span_from_question)
 
 python exp_scripts/retrieval/run_retrieval.py \
     --input_file "$DATA_FILE" \

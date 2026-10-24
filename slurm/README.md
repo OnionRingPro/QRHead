@@ -20,10 +20,10 @@ slurm/submit.sh <exp> <tag> <job script> [VAR=value ...] [-- extra sbatch option
 ```
 
 - A tag that already has a run directory is refused, because the scripts resume from partial outputs in
-  it (that is how a stale control run once got silently reused). Pick a new tag, or pass `RESUME=1` to
-  resubmit into the existing directory on purpose (e.g. after a timeout).
+it (that is how a stale control run once got silently reused). Pick a new tag, or pass `RESUME=1` to
+resubmit into the existing directory on purpose (e.g. after a timeout).
 - Anything after `--` goes to `sbatch` and overrides the script's `#SBATCH` lines:
-  `-- --time=6:00:00`, `-- --gres=gpu:l40s:1 --mem=32G`, `-- --dependency=afterok:<jobid>`.
+`-- --time=6:00:00`, `-- --gres=gpu:l40s:1 --mem=32G`, `-- --dependency=afterok:<jobid>`.
 - `slurm/common.sh` is the shared setup every job sources (venv, `HF_HOME`, `DATA_ROOT`, reading `params.env`).
 
 ## oolong

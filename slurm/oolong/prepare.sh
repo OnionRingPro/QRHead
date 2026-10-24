@@ -8,6 +8,7 @@
 # Convert oolong-synth parquet files into QRHead retrieval JSON. Submit with slurm/submit.sh; variables:
 #   SPLIT            validation | test, default validation
 #   MAX_CONTEXT_LEN  default: prepare_oolong.py's (131072)
+#   MIN_CONTEXT_LEN  default: prepare_oolong.py's (0)
 #   OUT_FILE         default $DATA_ROOT/oolong_data/synth_<SPLIT>.json; an existing file is kept unless OVERWRITE=1,
 #                    since every retrieval run on it would silently change meaning
 # The log in $RUN_DIR keeps the Stats line (how many questions each filter dropped).
@@ -23,6 +24,7 @@ fi
 
 args=()
 [ -n "${MAX_CONTEXT_LEN:-}" ] && args+=(--max_context_len "$MAX_CONTEXT_LEN")
+[ -n "${MIN_CONTEXT_LEN:-}" ] && args+=(--min_context_len "$MIN_CONTEXT_LEN")
 
 python exp_scripts/data/prepare_oolong.py \
     --raw_dir "$SCRATCH/qrhead_data/raw/oolong-synth" \

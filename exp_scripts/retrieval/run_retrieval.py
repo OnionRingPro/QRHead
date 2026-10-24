@@ -27,7 +27,8 @@ def main():
     parser.add_argument("--max_instances", type=int, default=0, help="Only run the first N data instances (for smoke tests). Default is 0 (all).")
     parser.add_argument("--subsample", type=int, default=0, help="Randomly sample N data instances with a fixed seed (for quick comparisons). Default is 0 (all).")
     parser.add_argument("--cot_instruction", type=str, default=None, help="Instruction placed before the query for cot_qr_head. Defaults to CoTQRRetriever's default.")
-    parser.add_argument("--q_weight", type=float, default=None, help="Share of the question tokens in the query mean for cot_qr_head (rest goes to the CoT).")
+    parser.add_argument("--q_weight", type=float, default=None, help="Share of the tail tokens before the CoT (instruction + question, or just the question with --span_from_question) in the query mean for cot_qr_head (rest goes to the CoT).")
+    parser.add_argument("--span_from_question", action="store_true", help="For cot_qr_head, start the scored query span at the question rather than at the CoT instruction (the behaviour before 2026-10-24).")
     parser.add_argument("--cot_file", type=str, default=None, help="Reuse CoTs from a previous run's *_cot.json instead of generating them.")
     parser.add_argument("--null_cot", action="store_true", help="For cot_qr_head, calibrate the CoT part against another query's CoT from --cot_file (permutation null).")
     parser.add_argument("--max_new_tokens",type=int, default=None, help="Max CoT length for cot_qr_head; 0 scores with the question only (no-CoT control). Defaults to CoTQRRetriever's default.")
@@ -51,12 +52,14 @@ def main():
         )
     elif args.retriever_type == "cot_qr_head":
         cot_kwargs = {k: v for k, v in [("cot_instruction", args.cot_instruction), ("max_new_tokens", args.max_new_tokens), ("q_weight", args.q_weight), ("null_cot", args.null_cot)] if v is not None}
+        cot_kwargs["span_from_instruction"] = not args.span_from_question
         retriever = CoTQRRetriever(
             config_or_config_path=args.config_or_config_path,
             model_name_or_path=args.model_name_or_path,
             **cot_kwargs,
         )
         print(f"CoT instruction: {retriever.cot_instruction}", flush=True)
+        print(f"Query span starts at the {'instruction' if retriever.span_from_instruction else 'question'}", flush=True)
 
     reuse_cots = json.load(open(args.cot_file)) if args.cot_file else {}
     # permutation null: shuffle the queries into a cycle (fixed seed) and let each borrow the next one's CoT, never its own

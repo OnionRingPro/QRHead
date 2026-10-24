@@ -109,13 +109,14 @@ def main():
     parser.add_argument("--output_file", type=str, required=True, help="Path to the output JSON file.")
     parser.add_argument("--split", type=str, choices=["validation", "test"], default="validation")
     parser.add_argument("--max_context_len", type=int, default=131072, help="Drop context windows whose context_len bucket is above this. Measured on validation, the QRHead prompt is 0.55-0.92x context_len Llama-3.1 tokens (~121K for the 131072 bucket), so 131072 is the largest bucket that fits Llama-3.1's 128K window.")
+    parser.add_argument("--min_context_len", type=int, default=0, help="Drop context windows whose context_len bucket is below this.")
     args = parser.parse_args()
 
     files = sorted(glob.glob(os.path.join(args.raw_dir, f"{args.split}-*.parquet")))
     print(f"Found {len(files)} parquet files for split {args.split}", flush=True)
 
     data_instances = []
-    stats = {"rows": 0, "not_subset": 0, "too_long": 0, "unparsed": 0, "empty_gold": 0}
+    stats = {"rows": 0, "not_subset": 0, "too_long": 0, "too_short": 0, "unparsed": 0, "empty_gold": 0}
     for path in files:
         # stream in small batches: some shards are hundreds of MB of long contexts
         for batch in pq.ParquetFile(path).iter_batches(columns=COLUMNS, batch_size=32):
@@ -126,6 +127,9 @@ def main():
                     continue
                 if row["context_len"] > args.max_context_len:
                     stats["too_long"] += 1
+                    continue
+                if row["context_len"] < args.min_context_len:
+                    stats["too_short"] += 1
                     continue
                 parsed = parse_subset_filter(row["question"])
                 if parsed is None:
