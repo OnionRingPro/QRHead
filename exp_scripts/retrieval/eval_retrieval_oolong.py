@@ -64,6 +64,11 @@ def main():
         samples = json.load(f)
 
     print(f"Loaded {len(scores)} score entries and {len(samples)} ground truth samples")
+    # whole-context questions (prepare_oolong.py --all_questions) have no gold lines to recall
+    n_no_gold = sum(not sample['gt_docs'] for sample in samples)
+    if n_no_gold:
+        samples = [sample for sample in samples if sample['gt_docs']]
+        print(f"Skipping {n_no_gold} questions without gold docs; scoring {len(samples)}")
 
     samples_by_type = defaultdict(list)
     for sample in samples:

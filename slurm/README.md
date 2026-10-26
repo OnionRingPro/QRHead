@@ -30,10 +30,12 @@ resubmit into the existing directory on purpose (e.g. after a timeout).
 
 | Script | What it does | Variables |
 |---|---|---|
-| `oolong/prepare.sh` | parquet -> retrieval JSON | `SPLIT`, `MAX_CONTEXT_LEN`, `OUT_FILE`, `OVERWRITE=1` |
-| `oolong/retrieval.sh` | attention retrieval + its eval | `RETRIEVER`, `MODEL_CONFIG` (required), `DATA_FILE`, `SUBSAMPLE`, `MAX_INSTANCES`, `MAX_NEW_TOKENS`, `Q_WEIGHT`, `COT_INSTRUCTION`, `COT_FILE`, `NULL_COT=1` |
+| `oolong/prepare.sh` | parquet -> retrieval JSON | `SPLIT`, `MAX_CONTEXT_LEN`, `MIN_CONTEXT_LEN`, `ALL_QUESTIONS=1`, `OUT_FILE`, `OVERWRITE=1` |
+| `oolong/retrieval.sh` | attention retrieval + its eval | `RETRIEVER`, `MODEL_CONFIG` (required), `DATA_FILE`, `SUBSAMPLE`, `MAX_INSTANCES`, `MAX_NEW_TOKENS`, `COT_INSTRUCTION`, `COT_FILE`, `GEN_FILE` (qrcot) |
 | `oolong/bm25.sh` | BM25 baselines + their eval | `COT_FILE`, `MODES`, `DATA_FILE` |
 | `oolong/eval.sh` | several results side by side | `RUNS` (required), `DATA_FILE` |
+| `oolong/generate.sh` | vLLM answers over all / random / retrieved lines, then their scores (vLLM venv, see `setup_vllm_env.sh`) | `METHOD` (required), `TOPK`, `RETRIEVAL_FILE`, `DATA_FILE`, `MODEL`, `MAX_INSTANCES`, `MAX_TOKENS`, `MAX_MODEL_LEN` |
+| `oolong/eval_generation.sh` | score generations side by side (oolong-synth rules; CPU) | `RUNS` (required), `DATA_FILE` |
 
 The Llama-3.1-8B oolong experiments, as they would be submitted now:
 
@@ -48,7 +50,9 @@ slurm/submit.sh oolong bm25_llama_cot slurm/oolong/bm25.sh COT_FILE=output/oolon
 
 Results from before this layout stay where they were: `output/oolong_cot/`, `output/oolong_bm25/`,
 `output/oolong_results/`, `output/lme_*`, with their logs in `out/`. The `slurm/lme/` and `slurm/cot/`
-scripts are kept as the record of those LongMemEval runs and still use the old layout.
+scripts are kept as the record of those LongMemEval runs and still use the old layout. `slurm/cot/slurm_cot_retrieval.sh`
+passes `--null_cot`, which was removed on 2026-10-25 together with `--q_weight` and `--span_from_question`; rerunning it
+needs a commit from before then (c99837c or earlier).
 
 ## Caveat: the code is installed in editable mode
 

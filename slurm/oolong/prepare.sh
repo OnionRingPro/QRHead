@@ -9,6 +9,7 @@
 #   SPLIT            validation | test, default validation
 #   MAX_CONTEXT_LEN  default: prepare_oolong.py's (131072)
 #   MIN_CONTEXT_LEN  default: prepare_oolong.py's (0)
+#   ALL_QUESTIONS=1  also keep the whole-context questions (no gt_docs), for end-to-end answer scoring
 #   OUT_FILE         default $DATA_ROOT/oolong_data/synth_<SPLIT>.json; an existing file is kept unless OVERWRITE=1,
 #                    since every retrieval run on it would silently change meaning
 # The log in $RUN_DIR keeps the Stats line (how many questions each filter dropped).
@@ -25,6 +26,7 @@ fi
 args=()
 [ -n "${MAX_CONTEXT_LEN:-}" ] && args+=(--max_context_len "$MAX_CONTEXT_LEN")
 [ -n "${MIN_CONTEXT_LEN:-}" ] && args+=(--min_context_len "$MIN_CONTEXT_LEN")
+[ "${ALL_QUESTIONS:-0}" = 1 ] && args+=(--all_questions)
 
 python exp_scripts/data/prepare_oolong.py \
     --raw_dir "$SCRATCH/qrhead_data/raw/oolong-synth" \
